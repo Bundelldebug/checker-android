@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">체커</string>
+    <string name="widget_name">체커 · 이번 달 결제</string>
+    <string name="tab_home">홈</string>
+    <string name="tab_calendar">캘린더</string>
+    <string name="tab_stats">통계</string>
+    <string name="tab_settings">설정</string>
+    <string name="search">검색</string>
+    <string name="search_hint">구독·카테고리·메모 검색</string>
+    <string name="cancel">취소</string>
+    <string name="save">저장</string>
+    <string name="mark_paid">결제 확인</string>
+    <string name="channel_billing">결제 알림</string>
+    <string name="channel_billing_desc">구독·고정지출 결제일 전에 알려 줍니다</string>
+    <string name="w_checked">확인한 결제 %1$s</string>
+    <string name="w_empty">예정된 결제가 없어요</string>
+    <string name="accent_blue">블루</string>
+    <string name="accent_red">레드</string>
+    <string name="accent_violet">바이올렛</string>
+    <string name="accent_teal">틸</string>
+    <string name="accent_green">그린</string>
+    <string name="accent_orange">오렌지</string>
+    <string name="accent_pink">핑크</string>
+    <string name="accent_dynamic">배경화면 색상</string>
+</resources>
