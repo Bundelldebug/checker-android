@@ -154,6 +154,8 @@ final class Pages {
             fxRow.setPadding(Ui.dp(10), Ui.dp(7), Ui.dp(10), Ui.dp(7));
             fxRow.setBackground(Ui.round(Ui.chip(), 12));
             TextView fxTxt = Ui.text(c, String.format(Locale.KOREA, "USD %.0f · JPY %.1f · EUR %.0f", Store.usd, Store.jpy, Store.eur), 11.5f, Ui.medium, Ui.text2());
+            fxTxt.setMaxLines(2);
+            fxTxt.setEllipsize(android.text.TextUtils.TruncateAt.END);
             fxRow.addView(fxTxt, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             fxRow.addView(Ui.text(c, Store.rateUpdatedLabel(), 11f, Ui.semibold, Ui.ACCENT));
             fxRow.setOnClickListener(v -> {
@@ -332,7 +334,10 @@ final class Pages {
             mid.setOrientation(LinearLayout.VERTICAL);
             LinearLayout titleLine = new LinearLayout(c);
             titleLine.setGravity(Gravity.CENTER_VERTICAL);
-            titleLine.addView(Ui.text(c, s.name, 15.5f, Ui.semibold, Ui.text()));
+            TextView nameTv = Ui.text(c, s.name, 15.5f, Ui.semibold, Ui.text());
+            nameTv.setMaxLines(1);
+            nameTv.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            titleLine.addView(nameTv, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             if (s.paused) titleLine.addView(Widgets.pillBadge(c, "일시정지", Ui.chip(), Ui.text2()));
             else if (s.trial) titleLine.addView(Widgets.pillBadge(c, "체험", Ui.alpha(0xFFF59E0B, 0.2f), 0xFFF59E0B));
             mid.addView(titleLine);
@@ -697,7 +702,9 @@ final class Pages {
 
                 tp.setTextSize(Ui.sp(10.5f));
                 tp.setColor(Ui.text2());
-                String shortVal = vals[i] >= 10000 ? Math.round(vals[i] / 10000.0) + "만" : String.valueOf(Math.round(vals[i] / 1000.0)) + "천";
+                String shortVal = vals[i] >= 10000
+                        ? Math.round(vals[i] / 10000.0) + "만"
+                        : (vals[i] >= 1000 ? Math.round(vals[i] / 1000.0) + "천" : Math.round(vals[i]) + "원");
                 if (vals[i] > 0) cv.drawText(shortVal, cx, top - Ui.dpf(6), tp);
 
                 tp.setTextSize(Ui.sp(12f));
@@ -935,13 +942,20 @@ final class Pages {
         });
         updateFxPreview.run();
 
-        // Cycle chips
+        // Cycle chips + optional interval for DAYS
         String[] cycleLabels = {"매월", "매년", "매주", "일 단위"};
         TextView cycLbl = Ui.text(m, "결제 주기", 13, Ui.semibold, Ui.text2());
         cycLbl.setPadding(Ui.dp(4), Ui.dp(6), 0, Ui.dp(4));
         form.addView(cycLbl);
-        Widgets.Chips cycChips = new Widgets.Chips(m, cycleLabels, selCycle[0], idx -> selCycle[0] = idx);
-        form.addView(cycChips, Widgets.MW);
+        EditText everyEt = Widgets.formField(m, "반복 간격 (일)", "예: 30 (30일마다)",
+                String.valueOf(Math.max(1, work.every)), InputType.TYPE_CLASS_NUMBER, form);
+        View everyWrap = (View) everyEt.getParent();
+        everyWrap.setVisibility(selCycle[0] == Store.DAYS ? View.VISIBLE : View.GONE);
+        Widgets.Chips cycChips = new Widgets.Chips(m, cycleLabels, selCycle[0], idx -> {
+            selCycle[0] = idx;
+            everyWrap.setVisibility(idx == Store.DAYS ? View.VISIBLE : View.GONE);
+        });
+        form.addView(cycChips, form.indexOfChild(everyWrap), Widgets.MW);
 
         // First / next billing date picker button
         TextView dateBtn = Widgets.button(m, "기준 결제일: " + Store.dateLabel(LocalDate.ofEpochDay(selAnchor[0])), false, null);
@@ -1048,17 +1062,21 @@ final class Pages {
             }
         }
 
-        Widgets.showFormSheet(m, isNew ? "구독·고정지출 추가" : "구독 편집", form, m.getString(R.string.save), () -> {
+        Widgets.showFormSheetValidated(m, isNew ? "구독·고정지출 추가" : "구독 편집", form, m.getString(R.string.save), () -> {
             String nm = nameEt.getText().toString().trim();
-            if (nm.isEmpty()) { Toast.makeText(m, "이름을 입력해 주세요", Toast.LENGTH_SHORT).show(); return; }
+            if (nm.isEmpty()) { Toast.makeText(m, "이름을 입력해 주세요", Toast.LENGTH_SHORT).show(); return false; }
             double a = 0;
             try { a = Double.parseDouble(amtEt.getText().toString().trim().replace(",", "")); } catch (Exception ignored) {}
-            if (a <= 0) { Toast.makeText(m, "금액을 올바르게 입력해 주세요", Toast.LENGTH_SHORT).show(); return; }
+            if (a <= 0) { Toast.makeText(m, "금액을 올바르게 입력해 주세요", Toast.LENGTH_SHORT).show(); return false; }
             work.name = nm;
             work.amount = a;
             work.currency = Store.CURRENCIES[selCur[0]];
             work.cycle = selCycle[0];
-            work.every = 1;
+            int ev = Math.max(1, work.every);
+            if (selCycle[0] == Store.DAYS) {
+                try { ev = Math.max(1, Integer.parseInt(everyEt.getText().toString().trim())); } catch (Exception ignored) { ev = 30; }
+            }
+            work.every = ev;
             work.anchor = selAnchor[0];
             work.category = Store.CATEGORIES[selCat[0]];
             work.remind = selRemind[0];
@@ -1068,6 +1086,7 @@ final class Pages {
             work.memo = memoEt.getText().toString().trim();
             if (isNew) Store.subs.add(work);
             m.dataChanged();
+            return true;
         });
     }
 

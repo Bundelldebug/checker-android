@@ -517,6 +517,45 @@ final class Widgets {
         GlassMenu.customSheet(m, anchor, title, wrap, null);
     }
 
+    interface ValidatedOk { boolean onSubmit(); }
+
+    static void showFormSheetValidated(MainActivity m, String title, View body, String okLabel, ValidatedOk onOk) {
+        LinearLayout wrap = new LinearLayout(m);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.setPadding(Ui.dp(14), Ui.dp(4), Ui.dp(14), Ui.dp(10));
+        wrap.addView(body, MW);
+
+        LinearLayout btns = new LinearLayout(m);
+        btns.setOrientation(LinearLayout.HORIZONTAL);
+        btns.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        blp.topMargin = Ui.dp(14);
+
+        TextView cancel = Ui.text(m, m.getString(R.string.cancel), 15, Ui.semibold, Ui.text());
+        cancel.setGravity(Gravity.CENTER);
+        cancel.setPadding(0, Ui.dp(14), 0, Ui.dp(14));
+        cancel.setBackground(Ui.round(Ui.chip(), 100));
+        cancel.setOnClickListener(v -> GlassMenu.dismissAny(m.root));
+        Ui.press(cancel, 0.96f);
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        clp.rightMargin = Ui.dp(10);
+        btns.addView(cancel, clp);
+
+        TextView ok = Ui.text(m, okLabel, 15, Ui.semibold, 0xFFFFFFFF);
+        ok.setGravity(Gravity.CENTER);
+        ok.setPadding(0, Ui.dp(14), 0, Ui.dp(14));
+        ok.setBackground(Ui.round(Ui.ACCENT, 100));
+        ok.setOnClickListener(v -> {
+            if (onOk == null || onOk.onSubmit()) GlassMenu.dismissAny(m.root);
+        });
+        Ui.press(ok, 0.96f);
+        btns.addView(ok, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        wrap.addView(btns, blp);
+        RectF anchor = new RectF(Ui.screenW / 2f - Ui.dpf(40), Ui.screenH - Ui.dpf(80), Ui.screenW / 2f + Ui.dpf(40), Ui.screenH - Ui.dpf(40));
+        GlassMenu.customSheet(m, anchor, title, wrap, null);
+    }
+
     interface PickCb { void onPicked(int index); }
 
     /** Unified single-choice glass sheet replacing stock AlertDialog across all settings & pickers. */

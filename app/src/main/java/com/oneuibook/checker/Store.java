@@ -86,8 +86,8 @@ final class Store {
         boolean trialEnd() { return sub.trial && index == 0; }
     }
 
-    static final List<Sub> subs = new ArrayList<>();
-    static final Set<String> paid = new HashSet<>();
+    static final List<Sub> subs = new java.util.concurrent.CopyOnWriteArrayList<>();
+    static final Set<String> paid = java.util.concurrent.ConcurrentHashMap.newKeySet();
     static double usd = 1400, jpy = 9.4, eur = 1500;
     static long rateUpdatedAt = 0;
     static String rateSource = "기본값";
@@ -284,24 +284,19 @@ final class Store {
     }
 
     /** Bidirectional timestamp-aware merge for real-time sync files. Returns true if local state changed. */
-    static boolean mergeSyncJson(String remoteJson) throws Exception {
+    static synchronized boolean mergeSyncJson(String remoteJson) throws Exception {
         if (remoteJson == null || remoteJson.trim().isEmpty()) return false;
         JSONObject o = new JSONObject(remoteJson);
         long remoteTs = o.optLong("updated_at", 0L);
         boolean changed = false;
         JSONArray a = o.optJSONArray("subs");
-        if (a != null) {
-            if (remoteTs > updatedAt) {
-                subs.clear();
-                for (int i = 0; i < a.length(); i++) subs.add(Sub.from(a.getJSONObject(i)));
-                updatedAt = remoteTs;
-                changed = true;
-            } else {
-                for (int i = 0; i < a.length(); i++) {
-                    Sub s = Sub.from(a.getJSONObject(i));
-                    if (find(s.id) == null) { subs.add(s); changed = true; }
-                }
-            }
+        if (a != null && remoteTs > updatedAt) {
+            List<Sub> next = new ArrayList<>();
+            for (int i = 0; i < a.length(); i++) next.add(Sub.from(a.getJSONObject(i)));
+            subs.clear();
+            subs.addAll(next);
+            updatedAt = remoteTs;
+            changed = true;
         }
         JSONArray pd = o.optJSONArray("paid");
         if (pd != null) {

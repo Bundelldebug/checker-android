@@ -66,6 +66,9 @@ public final class Reminder extends BroadcastReceiver {
 
     static void catchUp(Context c) {
         if (!Store.notify) return;
+        if (android.os.Build.VERSION.SDK_INT >= 33
+                && c.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) return;
         long last = Store.prefs(c).getLong("last_check", -1);
         if (last < Store.today().toEpochDay() && LocalDateTime.now().getHour() >= Store.remindHour) notifyDue(c);
     }

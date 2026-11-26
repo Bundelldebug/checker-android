@@ -35,7 +35,8 @@ import java.util.List;
  * phone · unfolded foldable · tablet responsive layouts.
  */
 public final class MainActivity extends Activity implements Dock.Listener, Header.Listener {
-    static final String VERSION = "9.5.3";
+    static final String VERSION = "9.5.4";
+    private static final java.util.concurrent.ExecutorService SYNC_EXEC = java.util.concurrent.Executors.newSingleThreadExecutor();
 
     private static final int REQ_NOTIF = 3001, REQ_EXPORT = 3002, REQ_IMPORT = 3003,
             REQ_SYNC_CREATE = 3004, REQ_SYNC_OPEN = 3005;
@@ -91,6 +92,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             android.graphics.Insets sys = insets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
             int ime = insets.getInsets(WindowInsets.Type.ime()).bottom;
             boolean changed = sys.top != Ui.statusInset || sys.bottom != Ui.navInset;
+            boolean imeChanged = ime != Ui.imeInset;
             Ui.statusInset = sys.top;
             Ui.navInset = sys.bottom;
             Ui.cutoutLeft = sys.left;
@@ -101,6 +103,12 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             if (changed) {
                 for (NavStack s : tabs) if (s != null) s.applyInsets();
                 if (searchPage != null) searchPage.applyInsets();
+            }
+            if (imeChanged || changed) {
+                for (int i = 0; i < root.getChildCount(); i++) {
+                    View ch = root.getChildAt(i);
+                    if (ch instanceof GlassMenu) ch.requestLayout();
+                }
             }
             return WindowInsets.CONSUMED;
         });
@@ -133,10 +141,11 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
 
         Reminder.ensureChannel(this);
         Reminder.schedule(this);
-        Reminder.catchUp(this);
+        boolean canPostNotif = Build.VERSION.SDK_INT < 33
+                || checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+        if (canPostNotif) Reminder.catchUp(this);
         CheckerWidget.updateAll(this);
-        if (state == null && Build.VERSION.SDK_INT >= 33 && Store.notify
-                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        if (state == null && !canPostNotif && Store.notify
                 && !p.getBoolean("asked_notif", false)) {
             p.edit().putBoolean("asked_notif", true).apply();
             requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, REQ_NOTIF);
@@ -170,11 +179,19 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
     @Override public void onConfigurationChanged(Configuration c) {
         super.onConfigurationChanged(c);
         Ui.init(this, prefs(this));
-        fitHeader();
-        dock.requestLayout();
-        for (NavStack s : tabs) if (s != null) { s.applyInsets(); s.rebuildAll(); }
-        if (tabletUi() && sidebarWanted && sidebar == null) openSidebar(false);
-        else if (!tabletUi() && sidebar != null) closeSidebar();
+        root.post(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            fitHeader();
+            dock.requestLayout();
+            for (NavStack s : tabs) if (s != null) { s.applyInsets(); s.rebuildAll(); }
+            if (searchPage != null) { searchPage.applyInsets(); searchPage.rebuild(); }
+            if (tabletUi() && sidebarWanted && sidebar == null) openSidebar(false);
+            else if (!tabletUi() && sidebar != null) {
+                applySidebar(0f, Sidebar.widthFor(rootW()));
+                root.removeView(sidebar);
+                sidebar = null;
+            }
+        });
     }
 
     void setLightStatus(boolean light) {
@@ -401,20 +418,25 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         Toast.makeText(this, "클라우드 동기화 연결을 해제했어요", Toast.LENGTH_SHORT).show();
     }
 
+    private OutputStream openWriteStream(Uri uri) throws Exception {
+        try { return getContentResolver().openOutputStream(uri, "wt"); }
+        catch (Exception e) { return getContentResolver().openOutputStream(uri, "w"); }
+    }
+
     void pushSyncAsync() {
         final String u = Store.syncUri;
         if (u == null || u.isEmpty()) return;
-        new Thread(() -> {
+        SYNC_EXEC.execute(() -> {
             try {
                 String payload = Store.exportJson();
-                try (OutputStream os = getContentResolver().openOutputStream(Uri.parse(u), "wt")) {
+                try (OutputStream os = openWriteStream(Uri.parse(u))) {
                     if (os != null) os.write(payload.getBytes(StandardCharsets.UTF_8));
                 }
                 Store.lastSyncAt = System.currentTimeMillis();
                 Store.persist(this);
                 runOnUiThread(this::reloadAll);
             } catch (Exception ignored) {}
-        }, "checker-sync-push").start();
+        });
     }
 
     void syncNow(boolean showToast) {
@@ -423,7 +445,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             if (showToast) Toast.makeText(this, "먼저 동기화 파일을 연결해 주세요", Toast.LENGTH_SHORT).show();
             return;
         }
-        new Thread(() -> {
+        SYNC_EXEC.execute(() -> {
             try {
                 Uri uri = Uri.parse(u);
                 StringBuilder sb = new StringBuilder();
@@ -436,7 +458,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
                 }
                 boolean changed = sb.length() > 2 && Store.mergeSyncJson(sb.toString());
                 String out = Store.exportJson();
-                try (OutputStream os = getContentResolver().openOutputStream(uri, "wt")) {
+                try (OutputStream os = openWriteStream(uri)) {
                     if (os != null) os.write(out.getBytes(StandardCharsets.UTF_8));
                 }
                 Store.lastSyncAt = System.currentTimeMillis();
@@ -449,7 +471,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             } catch (Exception e) {
                 if (showToast) runOnUiThread(() -> Toast.makeText(this, "동기화에 실패했어요: " + e.getMessage(), Toast.LENGTH_LONG).show());
             }
-        }, "checker-sync-now").start();
+        });
     }
 
     // ---- Import / export (SAF) ----
@@ -514,7 +536,10 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
 
     @Override public void onRequestPermissionsResult(int req, String[] perms, int[] res) {
         super.onRequestPermissionsResult(req, perms, res);
-        if (req == REQ_NOTIF) reloadAll();
+        if (req == REQ_NOTIF) {
+            if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) Reminder.catchUp(this);
+            reloadAll();
+        }
     }
 
     @Override protected void onSaveInstanceState(Bundle out) {
