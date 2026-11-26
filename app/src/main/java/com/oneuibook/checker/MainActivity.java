@@ -35,7 +35,7 @@ import java.util.List;
  * phone · unfolded foldable · tablet responsive layouts.
  */
 public final class MainActivity extends Activity implements Dock.Listener, Header.Listener {
-    static final String VERSION = "9.5.1";
+    static final String VERSION = "9.5.2";
 
     private static final int REQ_NOTIF = 3001, REQ_EXPORT = 3002, REQ_IMPORT = 3003;
 

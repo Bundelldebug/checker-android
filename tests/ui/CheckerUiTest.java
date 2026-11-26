@@ -127,7 +127,7 @@ public class CheckerUiTest {
         ActivityController<MainActivity> ctrl = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity act = ctrl.get();
         assertEquals("체커", act.getString(R.string.app_name));
-        assertEquals("9.5.1", MainActivity.VERSION);
+        assertEquals("9.5.2", MainActivity.VERSION);
         saveShot(act.root, 1236, 2745, "phone-home.png");
 
         act.dock.select(1, false);
