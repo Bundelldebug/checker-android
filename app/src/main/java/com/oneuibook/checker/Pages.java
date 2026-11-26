@@ -148,6 +148,26 @@ final class Pages {
             normRow.addView(metricCol(c, "연간 예상", Store.won(normYearly)), new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             hero.addView(normRow, Widgets.MW);
 
+            // Live exchange rate badge strip
+            LinearLayout fxRow = new LinearLayout(c);
+            fxRow.setGravity(Gravity.CENTER_VERTICAL);
+            fxRow.setPadding(Ui.dp(10), Ui.dp(7), Ui.dp(10), Ui.dp(7));
+            fxRow.setBackground(Ui.round(Ui.chip(), 12));
+            TextView fxTxt = Ui.text(c, String.format(Locale.KOREA, "USD %.0f · JPY %.1f · EUR %.0f", Store.usd, Store.jpy, Store.eur), 11.5f, Ui.medium, Ui.text2());
+            fxRow.addView(fxTxt, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            fxRow.addView(Ui.text(c, Store.rateUpdatedLabel(), 11f, Ui.semibold, Ui.ACCENT));
+            fxRow.setOnClickListener(v -> {
+                Toast.makeText(c, "실시간 환율을 업데이트하는 중...", Toast.LENGTH_SHORT).show();
+                Store.fetchLiveRates(c, true, () -> {
+                    main.reloadAll();
+                    Toast.makeText(c, "실시간 환율을 반영했어요", Toast.LENGTH_SHORT).show();
+                }, () -> Toast.makeText(c, "환율 정보를 불러오지 못했어요", Toast.LENGTH_SHORT).show());
+            });
+            Ui.press(fxRow, 0.97f);
+            LinearLayout.LayoutParams fxlp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            fxlp.topMargin = Ui.dp(12);
+            hero.addView(fxRow, fxlp);
+
             content.addView(hero, cardLp());
 
             // Upcoming payments within 14 days
@@ -859,10 +879,12 @@ final class Pages {
 
         final EditText nameEt;
         final EditText amtEt;
+        final Store.Preset[] activePreset = {null};
+        final boolean[] userPickedCur = {!isNew};
 
         // Presets strip for new subscriptions
         if (isNew) {
-            TextView pl = Ui.text(m, "프리셋", 12.5f, Ui.semibold, Ui.text2());
+            TextView pl = Ui.text(m, "프리셋 (통화 변경 시 USD·JPY·EUR 자동 반영)", 12.5f, Ui.semibold, Ui.text2());
             LinearLayout.LayoutParams pllp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             pllp.bottomMargin = Ui.dp(6);
             form.addView(pl, pllp);
@@ -878,12 +900,40 @@ final class Pages {
         nameEt = Widgets.formField(m, "이름", "예: Netflix, 월세, Spotify", work.name, InputType.TYPE_CLASS_TEXT, form);
         amtEt = Widgets.formField(m, "금액", "예: 13500", work.amount > 0 ? trimNum(work.amount) : "", InputType.TYPE_CLASS_NUMBER | InputType.TYPE_NUMBER_FLAG_DECIMAL, form);
 
-        // Currency chips
+        // Currency chips + live KRW conversion hint
         TextView curLbl = Ui.text(m, "통화", 13, Ui.semibold, Ui.text2());
         curLbl.setPadding(Ui.dp(4), Ui.dp(6), 0, Ui.dp(4));
         form.addView(curLbl);
-        Widgets.Chips curChips = new Widgets.Chips(m, Store.CURRENCIES, selCur[0], idx -> selCur[0] = idx);
+        TextView fxPreview = Ui.text(m, "", 12, Ui.medium, Ui.ACCENT);
+        fxPreview.setPadding(Ui.dp(6), Ui.dp(2), Ui.dp(4), Ui.dp(4));
+        Runnable updateFxPreview = () -> {
+            String cur = Store.CURRENCIES[selCur[0]];
+            double val = 0;
+            try { val = Double.parseDouble(amtEt.getText().toString().trim().replace(",", "")); } catch (Exception ignored) {}
+            if ("KRW".equals(cur) || val <= 0) {
+                fxPreview.setVisibility(View.GONE);
+            } else {
+                fxPreview.setVisibility(View.VISIBLE);
+                fxPreview.setText("원화 환산: 약 " + Store.won(val * Store.rate(cur)) + " (" + cur + " " + trimNum(Store.rate(cur)) + "원 기준)");
+            }
+        };
+        Widgets.Chips curChips = new Widgets.Chips(m, Store.CURRENCIES, selCur[0], idx -> {
+            userPickedCur[0] = true;
+            selCur[0] = idx;
+            String cur = Store.CURRENCIES[idx];
+            if (activePreset[0] != null) {
+                amtEt.setText(trimNum(activePreset[0].priceFor(cur)));
+            }
+            updateFxPreview.run();
+        });
         form.addView(curChips, Widgets.MW);
+        form.addView(fxPreview, Widgets.MW);
+        amtEt.addTextChangedListener(new android.text.TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int st, int c, int a) {}
+            @Override public void onTextChanged(CharSequence s, int st, int b, int c) {}
+            @Override public void afterTextChanged(android.text.Editable s) { updateFxPreview.run(); }
+        });
+        updateFxPreview.run();
 
         // Cycle chips
         String[] cycleLabels = {"매월", "매년", "매주", "일 단위"};
@@ -975,14 +1025,21 @@ final class Pages {
                 chip.setPadding(Ui.dp(12), Ui.dp(7), Ui.dp(12), Ui.dp(7));
                 chip.setBackground(Ui.round(pr.color, 100));
                 chip.setOnClickListener(v -> {
+                    activePreset[0] = pr;
+                    String useCur = userPickedCur[0] ? Store.CURRENCIES[selCur[0]] : pr.currency;
+                    int curIdx = indexOf(Store.CURRENCIES, useCur);
+                    selCur[0] = curIdx;
+                    curChips.setSelected(curIdx);
                     nameEt.setText(pr.name);
-                    amtEt.setText(trimNum(pr.amount));
-                    selCur[0] = indexOf(Store.CURRENCIES, pr.currency);
+                    amtEt.setText(trimNum(pr.priceFor(useCur)));
                     selCycle[0] = pr.cycle;
+                    cycChips.setSelected(pr.cycle);
                     selCat[0] = indexOf(Store.CATEGORIES, pr.category);
+                    catChips.setSelected(selCat[0]);
                     selColor[0] = pr.color;
                     for (View x : swViews) ((Runnable) x.getTag()).run();
-                    Toast.makeText(m, pr.name + " 기본값을 채웠어요. 실제 금액을 확인하세요.", Toast.LENGTH_SHORT).show();
+                    updateFxPreview.run();
+                    Toast.makeText(m, pr.name + " (" + useCur + ") 프리셋 가격을 채웠어요.", Toast.LENGTH_SHORT).show();
                 });
                 Ui.press(chip, 0.94f);
                 LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);

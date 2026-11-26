@@ -70,11 +70,56 @@ final class Settings {
             });
             content.addView(gNotif, Widgets.MW);
 
-            // 2. Exchange rates
-            Widgets.Group gRate = new Widgets.Group(c, "외화 환산 기준 (원화)");
-            gRate.row(Icons.GLOBE, 0xFF7B61FF, "환율 설정",
+            // 2. Exchange rates (real-time + manual)
+            Widgets.Group gRate = new Widgets.Group(c, "실시간 외화 환율 (원화 기준)");
+            LinearLayout autoFxRow = new LinearLayout(c);
+            autoFxRow.setGravity(Gravity.CENTER_VERTICAL);
+            autoFxRow.setPadding(Ui.dp(18), Ui.dp(14), Ui.dp(18), Ui.dp(14));
+            autoFxRow.addView(Ui.text(c, "실시간 환율 자동 반영", 16, Ui.medium, Ui.text()),
+                    new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            Widgets.Toggle fxToggle = new Widgets.Toggle(c, Store.autoRates);
+            fxToggle.change = on -> {
+                Store.autoRates = on;
+                Store.persist(c);
+                if (on) Store.fetchLiveRates(c, true, main::reloadAll, null);
+            };
+            autoFxRow.addView(fxToggle);
+            gRate.addCustom(autoFxRow);
+
+            gRate.row(Icons.GLOBE, 0xFF7B61FF, "지금 실시간 환율 가져오기", Store.rateUpdatedLabel(), false, v -> {
+                Toast.makeText(c, "실시간 환율을 조회하는 중...", Toast.LENGTH_SHORT).show();
+                Store.fetchLiveRates(c, true, () -> {
+                    main.reloadAll();
+                    Toast.makeText(c, "실시간 환율을 반영했어요", Toast.LENGTH_SHORT).show();
+                }, () -> Toast.makeText(c, "네트워크 연결을 확인해 주세요", Toast.LENGTH_SHORT).show());
+            });
+            gRate.row(Icons.TAG, 0xFF3B8BF5, "현재 적용 환율 (수동 편집)",
                     String.format("USD %.0f · JPY %.1f · EUR %.0f", Store.usd, Store.jpy, Store.eur), true, v -> showRatesSheet());
             content.addView(gRate, Widgets.MW);
+
+            // 2.5 Real-time Cloud Sync (SAF)
+            Widgets.Group gSync = new Widgets.Group(c, "실시간 클라우드 동기화");
+            LinearLayout syncToggleRow = new LinearLayout(c);
+            syncToggleRow.setGravity(Gravity.CENTER_VERTICAL);
+            syncToggleRow.setPadding(Ui.dp(18), Ui.dp(14), Ui.dp(18), Ui.dp(14));
+            syncToggleRow.addView(Ui.text(c, "변경 시 자동 동기화", 16, Ui.medium, Ui.text()),
+                    new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            Widgets.Toggle syncT = new Widgets.Toggle(c, Store.autoSync);
+            syncT.change = on -> { Store.autoSync = on; Store.persist(c); };
+            syncToggleRow.addView(syncT);
+            gSync.addCustom(syncToggleRow);
+
+            boolean syncLinked = Store.syncUri != null && !Store.syncUri.isEmpty();
+            gSync.row(Icons.GLOBE, 0xFF19B36B, "동기화 상태", Store.syncStatusLabel(), false, v -> {
+                if (syncLinked) main.syncNow(true); else main.connectSyncNew();
+            });
+            gSync.row(Icons.SHARE, 0xFF3B8BF5, "새 동기화 파일 만들기 (Google Drive·OneDrive)", null, true, v -> main.connectSyncNew());
+            gSync.row(Icons.DOWNLOAD, 0xFF7B61FF, "기존 동기화 파일 연결", null, true, v -> main.connectSyncExisting());
+            if (syncLinked) {
+                gSync.row(Icons.CHECK, 0xFF14B8A6, "지금 동기화", null, false, v -> main.syncNow(true));
+                gSync.row(Icons.INFO, 0xFFE5484D, "동기화 연결 해제", null, false, v -> main.disconnectSync());
+            }
+            content.addView(gSync, Widgets.MW);
 
             // 3. Appearance (matching Play / Prism)
             Widgets.Group gApp = new Widgets.Group(c, "화면 및 글래스");
@@ -153,6 +198,8 @@ final class Settings {
                 try { Store.usd = Math.max(1, Double.parseDouble(uEt.getText().toString().trim())); } catch (Exception ignored) {}
                 try { Store.jpy = Math.max(0.1, Double.parseDouble(jEt.getText().toString().trim())); } catch (Exception ignored) {}
                 try { Store.eur = Math.max(1, Double.parseDouble(eEt.getText().toString().trim())); } catch (Exception ignored) {}
+                Store.rateSource = "수동";
+                Store.rateUpdatedAt = System.currentTimeMillis();
                 main.dataChanged();
             });
         }

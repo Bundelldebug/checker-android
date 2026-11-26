@@ -401,11 +401,13 @@ final class Widgets {
         interface Listener { void onSelect(int index); }
         private final LinearLayout row;
         private final String[] items;
+        private final Listener listener;
         private int selected;
 
         Chips(Context c, String[] items, int initial, Listener l) {
             super(c);
             this.items = items;
+            this.listener = l;
             this.selected = initial;
             setHorizontalScrollBarEnabled(false);
             setOverScrollMode(OVER_SCROLL_NEVER);
@@ -415,6 +417,12 @@ final class Widgets {
             row.setPadding(Ui.dp(18), Ui.dp(4), Ui.dp(18), Ui.dp(8));
             addView(row);
             rebuild(l);
+        }
+
+        void setSelected(int idx) {
+            if (idx < 0 || idx >= items.length || selected == idx) return;
+            selected = idx;
+            rebuild(listener);
         }
 
         private void rebuild(Listener l) {

@@ -89,9 +89,17 @@ final class Store {
     static final List<Sub> subs = new ArrayList<>();
     static final Set<String> paid = new HashSet<>();
     static double usd = 1400, jpy = 9.4, eur = 1500;
+    static long rateUpdatedAt = 0;
+    static String rateSource = "기본값";
+    static boolean autoRates = true;
+    static long updatedAt = 0;
+    static String syncUri = "";
+    static long lastSyncAt = 0;
+    static boolean autoSync = true;
     static int defaultRemind = 1, remindHour = 9, sortMode;
     static boolean notify = true, showPaused = true;
     static LocalDate today = null; // test override
+    private static volatile boolean fetchingRates;
 
     static SharedPreferences prefs(Context c) {
         return c.getApplicationContext().getSharedPreferences("checker", Context.MODE_PRIVATE);
@@ -112,6 +120,13 @@ final class Store {
         usd = p.getFloat("rate_usd", 1400f);
         jpy = p.getFloat("rate_jpy", 9.4f);
         eur = p.getFloat("rate_eur", 1500f);
+        rateUpdatedAt = p.getLong("rate_updated_at", 0L);
+        rateSource = p.getString("rate_source", "기본값");
+        autoRates = p.getBoolean("auto_rates", true);
+        updatedAt = p.getLong("updated_at", 0L);
+        syncUri = p.getString("sync_uri", "");
+        lastSyncAt = p.getLong("last_sync_at", 0L);
+        autoSync = p.getBoolean("auto_sync", true);
         defaultRemind = p.getInt("remind_days", 1);
         remindHour = p.getInt("remind_hour", 9);
         notify = p.getBoolean("notify", true);
@@ -120,6 +135,7 @@ final class Store {
     }
 
     static void save(Context c) {
+        updatedAt = System.currentTimeMillis();
         persist(c);
         Reminder.schedule(c);
         CheckerWidget.updateAll(c);
@@ -139,23 +155,110 @@ final class Store {
             }
             prefs(c).edit().putString("subs", a.toString()).putString("paid", pd.toString())
                     .putFloat("rate_usd", (float) usd).putFloat("rate_jpy", (float) jpy).putFloat("rate_eur", (float) eur)
+                    .putLong("rate_updated_at", rateUpdatedAt).putString("rate_source", rateSource).putBoolean("auto_rates", autoRates)
+                    .putLong("updated_at", updatedAt).putString("sync_uri", syncUri).putLong("last_sync_at", lastSyncAt).putBoolean("auto_sync", autoSync)
                     .putInt("remind_days", defaultRemind).putInt("remind_hour", remindHour)
                     .putBoolean("notify", notify).putBoolean("show_paused", showPaused).putInt("sort_mode", sortMode).apply();
         } catch (Exception ignored) {}
+    }
+
+    /** Parses KRW-base FX JSON from open.er-api.com or frankfurter.app into {usdToKrw, jpyToKrw, eurToKrw}. */
+    static double[] parseRatesJson(String json) {
+        try {
+            JSONObject o = new JSONObject(json);
+            JSONObject r = o.optJSONObject("rates");
+            if (r == null) return null;
+            double ru = r.optDouble("USD", 0), rj = r.optDouble("JPY", 0), re = r.optDouble("EUR", 0);
+            if (ru <= 0 || rj <= 0 || re <= 0) return null;
+            double u = Math.round((1.0 / ru) * 100.0) / 100.0;
+            double j = Math.round((1.0 / rj) * 100.0) / 100.0;
+            double e = Math.round((1.0 / re) * 100.0) / 100.0;
+            if (u < 500 || u > 5000 || j < 2 || j > 50 || e < 500 || e > 5000) return null;
+            return new double[]{u, j, e};
+        } catch (Exception ignored) { return null; }
+    }
+
+    static String rateUpdatedLabel() {
+        if (rateUpdatedAt <= 0) return rateSource;
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("HH:mm", Locale.KOREA);
+        return rateSource + " · " + sdf.format(new java.util.Date(rateUpdatedAt));
+    }
+
+    static String syncStatusLabel() {
+        if (syncUri == null || syncUri.isEmpty()) return "연결 안 됨";
+        if (lastSyncAt <= 0) return "연결됨";
+        java.text.SimpleDateFormat sdf = new java.text.SimpleDateFormat("MM/dd HH:mm", Locale.KOREA);
+        return "동기화됨 · " + sdf.format(new java.util.Date(lastSyncAt));
+    }
+
+    /** Fetches real-time USD/JPY/EUR → KRW exchange rates asynchronously. */
+    static void fetchLiveRates(Context c, boolean force, Runnable onUpdated, Runnable onFailed) {
+        if (!force && (!autoRates || (System.currentTimeMillis() - rateUpdatedAt < 15 * 60 * 1000L && rateUpdatedAt > 0))) return;
+        if (fetchingRates) return;
+        fetchingRates = true;
+        final Context app = c.getApplicationContext();
+        final android.os.Handler mainH = new android.os.Handler(android.os.Looper.getMainLooper());
+        new Thread(() -> {
+            double[] parsed = null;
+            String[] urls = {
+                    "https://open.er-api.com/v6/latest/KRW",
+                    "https://api.frankfurter.app/latest?from=KRW&to=USD,JPY,EUR"
+            };
+            for (String u : urls) {
+                java.net.HttpURLConnection conn = null;
+                try {
+                    conn = (java.net.HttpURLConnection) new java.net.URL(u).openConnection();
+                    conn.setConnectTimeout(4500);
+                    conn.setReadTimeout(4500);
+                    conn.setRequestMethod("GET");
+                    if (conn.getResponseCode() == 200) {
+                        java.io.BufferedReader br = new java.io.BufferedReader(
+                                new java.io.InputStreamReader(conn.getInputStream(), java.nio.charset.StandardCharsets.UTF_8));
+                        StringBuilder sb = new StringBuilder();
+                        String line;
+                        while ((line = br.readLine()) != null) sb.append(line);
+                        br.close();
+                        parsed = parseRatesJson(sb.toString());
+                        if (parsed != null) break;
+                    }
+                } catch (Exception ignored) {
+                } finally {
+                    if (conn != null) conn.disconnect();
+                }
+            }
+            fetchingRates = false;
+            final double[] res = parsed;
+            mainH.post(() -> {
+                if (res != null) {
+                    usd = res[0]; jpy = res[1]; eur = res[2];
+                    rateUpdatedAt = System.currentTimeMillis();
+                    rateSource = "실시간";
+                    persist(app);
+                    CheckerWidget.updateAll(app);
+                    if (onUpdated != null) onUpdated.run();
+                } else if (onFailed != null) {
+                    onFailed.run();
+                }
+            });
+        }, "checker-fx").start();
     }
 
     static String exportJson() throws Exception {
         JSONObject o = new JSONObject();
         o.put("app", "Checker");
         o.put("version", MainActivity.VERSION);
+        o.put("updated_at", updatedAt > 0 ? updatedAt : System.currentTimeMillis());
         JSONArray a = new JSONArray();
         for (Sub s : subs) a.put(s.toJson());
         o.put("subs", a);
+        JSONArray pd = new JSONArray();
+        for (String k : paid) pd.put(k);
+        o.put("paid", pd);
         o.put("rates", new JSONObject().put("USD", usd).put("JPY", jpy).put("EUR", eur));
         return o.toString(2);
     }
 
-    /** Merges subscriptions from an exported file. Returns the number of imported entries. */
+    /** Merges subscriptions & paid marks from an exported/synced file. Returns the number of imported entries. */
     static int importJson(String json) throws Exception {
         JSONObject o = new JSONObject(json);
         JSONArray a = o.getJSONArray("subs");
@@ -166,9 +269,48 @@ final class Store {
             if (old != null) subs.set(subs.indexOf(old), s); else subs.add(s);
             n++;
         }
+        JSONArray pd = o.optJSONArray("paid");
+        if (pd != null) {
+            for (int i = 0; i < pd.length(); i++) {
+                String k = pd.optString(i, "");
+                if (!k.isEmpty()) paid.add(k);
+            }
+        }
         JSONObject r = o.optJSONObject("rates");
-        if (r != null) { usd = r.optDouble("USD", usd); jpy = r.optDouble("JPY", jpy); eur = r.optDouble("EUR", eur); }
+        if (r != null && rateUpdatedAt == 0) {
+            usd = r.optDouble("USD", usd); jpy = r.optDouble("JPY", jpy); eur = r.optDouble("EUR", eur);
+        }
         return n;
+    }
+
+    /** Bidirectional timestamp-aware merge for real-time sync files. Returns true if local state changed. */
+    static boolean mergeSyncJson(String remoteJson) throws Exception {
+        if (remoteJson == null || remoteJson.trim().isEmpty()) return false;
+        JSONObject o = new JSONObject(remoteJson);
+        long remoteTs = o.optLong("updated_at", 0L);
+        boolean changed = false;
+        JSONArray a = o.optJSONArray("subs");
+        if (a != null) {
+            if (remoteTs > updatedAt) {
+                subs.clear();
+                for (int i = 0; i < a.length(); i++) subs.add(Sub.from(a.getJSONObject(i)));
+                updatedAt = remoteTs;
+                changed = true;
+            } else {
+                for (int i = 0; i < a.length(); i++) {
+                    Sub s = Sub.from(a.getJSONObject(i));
+                    if (find(s.id) == null) { subs.add(s); changed = true; }
+                }
+            }
+        }
+        JSONArray pd = o.optJSONArray("paid");
+        if (pd != null) {
+            for (int i = 0; i < pd.length(); i++) {
+                String k = pd.optString(i, "");
+                if (!k.isEmpty() && paid.add(k)) changed = true;
+            }
+        }
+        return changed;
     }
 
     static Sub find(String id) {
@@ -330,35 +472,50 @@ final class Store {
 
     static int remindDays(Sub s) { return s.remind < 0 ? defaultRemind : s.remind; }
 
-    // ---- Presets (example prices; the editor reminds the user to check the real price) ----
+    // ---- Presets with authentic regional pricing across KRW / USD / JPY / EUR ----
     static final class Preset {
         final String name, currency, category;
-        final double amount;
+        final double amount, krw, usd, jpy, eur;
         final int cycle, color;
-        Preset(String n, double a, String cur, int cy, String cat, int col) { name = n; amount = a; currency = cur; cycle = cy; category = cat; color = col; }
-        Sub make() {
+        Preset(String n, double krw, double usd, double jpy, double eur, String defCur, int cy, String cat, int col) {
+            name = n; this.krw = krw; this.usd = usd; this.jpy = jpy; this.eur = eur;
+            currency = defCur; amount = priceFor(defCur); cycle = cy; category = cat; color = col;
+        }
+        double priceFor(String cur) {
+            switch (cur) {
+                case "USD": return usd;
+                case "JPY": return jpy;
+                case "EUR": return eur;
+                default: return krw;
+            }
+        }
+        Sub make() { return make(currency); }
+        Sub make(String cur) {
             Sub s = new Sub();
-            s.name = name; s.amount = amount; s.currency = currency; s.cycle = cycle; s.category = category; s.color = color;
+            s.name = name; s.currency = cur; s.amount = priceFor(cur); s.cycle = cycle; s.category = category; s.color = color;
             return s;
         }
     }
 
     static final Preset[] PRESETS = {
-            new Preset("Netflix", 13500, "KRW", MONTH, "엔터테인먼트", 0xFFE50914),
-            new Preset("YouTube Premium", 14900, "KRW", MONTH, "엔터테인먼트", 0xFFFF2D2D),
-            new Preset("Spotify", 11990, "KRW", MONTH, "음악", 0xFF1DB954),
-            new Preset("ChatGPT Plus", 20, "USD", MONTH, "AI·생산성", 0xFF10A37F),
-            new Preset("Claude Pro", 20, "USD", MONTH, "AI·생산성", 0xFFD97757),
-            new Preset("NovelAI", 25, "USD", MONTH, "AI·생산성", 0xFF3D4A9E),
-            new Preset("Disney+", 9900, "KRW", MONTH, "엔터테인먼트", 0xFF113CCF),
-            new Preset("쿠팡 와우", 7890, "KRW", MONTH, "쇼핑·멤버십", 0xFFE52528),
-            new Preset("네이버플러스", 4900, "KRW", MONTH, "쇼핑·멤버십", 0xFF03C75A),
-            new Preset("iCloud+", 1100, "KRW", MONTH, "클라우드", 0xFF3693F3),
-            new Preset("Google One", 2400, "KRW", MONTH, "클라우드", 0xFF4285F4),
-            new Preset("Microsoft 365", 119000, "KRW", YEAR, "AI·생산성", 0xFFD83B01),
-            new Preset("휴대폰 요금", 55000, "KRW", MONTH, "고정지출", 0xFF64748B),
-            new Preset("월세", 500000, "KRW", MONTH, "고정지출", 0xFF7B61FF),
-            new Preset("보험료", 80000, "KRW", MONTH, "고정지출", 0xFF0EA5E9),
-            new Preset("헬스장", 60000, "KRW", MONTH, "기타", 0xFFFF6B3D),
+            new Preset("Netflix", 13500, 15.49, 1590, 13.99, "KRW", MONTH, "엔터테인먼트", 0xFFE50914),
+            new Preset("YouTube Premium", 14900, 13.99, 1280, 12.99, "KRW", MONTH, "엔터테인먼트", 0xFFFF2D2D),
+            new Preset("Spotify", 11990, 11.99, 980, 10.99, "KRW", MONTH, "음악", 0xFF1DB954),
+            new Preset("ChatGPT Plus", 29000, 20.0, 3000, 20.0, "USD", MONTH, "AI·생산성", 0xFF10A37F),
+            new Preset("Claude Pro", 29000, 20.0, 3000, 18.0, "USD", MONTH, "AI·생산성", 0xFFD97757),
+            new Preset("NovelAI", 35000, 25.0, 3800, 23.0, "USD", MONTH, "AI·생산성", 0xFF3D4A9E),
+            new Preset("Disney+", 9900, 13.99, 1140, 11.99, "KRW", MONTH, "엔터테인먼트", 0xFF113CCF),
+            new Preset("쿠팡 와우", 7890, 5.99, 890, 5.49, "KRW", MONTH, "쇼핑·멤버십", 0xFFE52528),
+            new Preset("네이버플러스", 4900, 3.99, 550, 3.49, "KRW", MONTH, "쇼핑·멤버십", 0xFF03C75A),
+            new Preset("iCloud+", 1100, 0.99, 130, 0.99, "KRW", MONTH, "클라우드", 0xFF3693F3),
+            new Preset("Google One", 2400, 1.99, 250, 1.99, "KRW", MONTH, "클라우드", 0xFF4285F4),
+            new Preset("Microsoft 365", 119000, 69.99, 14900, 69.0, "KRW", YEAR, "AI·생산성", 0xFFD83B01),
+            new Preset("휴대폰 요금", 55000, 40.0, 5500, 35.0, "KRW", MONTH, "고정지출", 0xFF64748B),
+            new Preset("월세", 500000, 1200.0, 80000, 900.0, "KRW", MONTH, "고정지출", 0xFF7B61FF),
+            new Preset("보험료", 80000, 60.0, 8500, 55.0, "KRW", MONTH, "고정지출", 0xFF0EA5E9),
+            new Preset("헬스장", 60000, 45.0, 7000, 40.0, "KRW", MONTH, "기타", 0xFFFF6B3D),
+            new Preset("Apple One", 14900, 19.95, 1200, 19.95, "KRW", MONTH, "엔터테인먼트", 0xFF1C1C1E),
+            new Preset("Nintendo Online", 4900, 3.99, 306, 3.99, "KRW", MONTH, "엔터테인먼트", 0xFFE60012),
+            new Preset("Adobe CC", 66000, 59.99, 7780, 67.49, "USD", MONTH, "AI·생산성", 0xFFFF0000),
     };
 }

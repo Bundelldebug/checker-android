@@ -88,6 +88,27 @@ public class CheckerUiTest {
         assertEquals(orig, Store.importJson(json));
         assertEquals(orig, Store.subs.size());
 
+        // Real-time FX JSON parsing (open.er-api.com / frankfurter.app format)
+        double[] fx = Store.parseRatesJson("{\"rates\":{\"USD\":0.0007142857,\"JPY\":0.105263,\"EUR\":0.0006666667}}");
+        assertNotNull(fx);
+        assertEquals(1400.0, fx[0], 1.0);
+        assertEquals(9.5, fx[1], 0.2);
+        assertEquals(1500.0, fx[2], 1.0);
+
+        // Multi-currency preset prices (USD / JPY / EUR)
+        Store.Preset nf = Store.PRESETS[0]; // Netflix
+        assertEquals(13500.0, nf.priceFor("KRW"), 0.01);
+        assertEquals(15.49, nf.priceFor("USD"), 0.01);
+        assertEquals(1590.0, nf.priceFor("JPY"), 0.01);
+        assertEquals(13.99, nf.priceFor("EUR"), 0.01);
+
+        // Bidirectional sync merge
+        long prevTs = Store.updatedAt;
+        Store.updatedAt = 1000L;
+        String newerJson = json.replace("\"updated_at\":", "\"updated_at\": 9999999999999, \"_old\":");
+        assertTrue(Store.mergeSyncJson(newerJson));
+        Store.updatedAt = prevTs;
+
         long next = Reminder.nextTrigger(LocalDateTime.of(2026, 11, 25, 10, 0), 9);
         assertTrue(next > 0);
         assertTrue(Reminder.title(dues.get(0), 0).contains("오늘"));
@@ -127,19 +148,27 @@ public class CheckerUiTest {
         ActivityController<MainActivity> ctrl = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity act = ctrl.get();
         assertEquals("체커", act.getString(R.string.app_name));
-        assertEquals("9.5.2", MainActivity.VERSION);
+        assertEquals("9.5.3", MainActivity.VERSION);
         saveShot(act.root, 1236, 2745, "phone-home.png");
 
         act.dock.select(1, false);
         act.onTab(1, false);
+        org.robolectric.shadows.ShadowLooper.idleMainLooper(350, java.util.concurrent.TimeUnit.MILLISECONDS);
         saveShot(act.root, 1236, 2745, "phone-calendar.png");
+
+        // Back button on non-home tab returns to Tab 0 instead of exiting
+        act.onBackPressed();
+        assertEquals(0, act.tab);
+        assertFalse(act.isFinishing());
 
         act.dock.select(2, false);
         act.onTab(2, false);
+        org.robolectric.shadows.ShadowLooper.idleMainLooper(350, java.util.concurrent.TimeUnit.MILLISECONDS);
         saveShot(act.root, 1236, 2745, "phone-stats.png");
 
         act.dock.select(3, false);
         act.onTab(3, false);
+        org.robolectric.shadows.ShadowLooper.idleMainLooper(350, java.util.concurrent.TimeUnit.MILLISECONDS);
         saveShot(act.root, 1236, 2745, "phone-settings.png");
     }
 

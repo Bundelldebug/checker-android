@@ -35,9 +35,10 @@ import java.util.List;
  * phone · unfolded foldable · tablet responsive layouts.
  */
 public final class MainActivity extends Activity implements Dock.Listener, Header.Listener {
-    static final String VERSION = "9.5.2";
+    static final String VERSION = "9.5.3";
 
-    private static final int REQ_NOTIF = 3001, REQ_EXPORT = 3002, REQ_IMPORT = 3003;
+    private static final int REQ_NOTIF = 3001, REQ_EXPORT = 3002, REQ_IMPORT = 3003,
+            REQ_SYNC_CREATE = 3004, REQ_SYNC_OPEN = 3005;
 
     FrameLayout root;
     Glass.Backdrop backdrop;
@@ -162,6 +163,8 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         // the notification action may have checked a payment while we were away
         Store.load(this);
         reloadAll();
+        Store.fetchLiveRates(this, false, this::reloadAll, null);
+        if (Store.autoSync && Store.syncUri != null && !Store.syncUri.isEmpty()) syncNow(false);
     }
 
     @Override public void onConfigurationChanged(Configuration c) {
@@ -247,6 +250,7 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         Store.save(this);
         reloadAll();
         if (sidebar != null) sidebar.refresh();
+        if (Store.autoSync && Store.syncUri != null && !Store.syncUri.isEmpty()) pushSyncAsync();
     }
 
     void reloadAll() {
@@ -297,10 +301,17 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             syncHeader();
             return;
         }
+        tabs[tab].animate().cancel();
         tabs[tab].setVisibility(View.GONE);
         tab = index;
-        tabs[tab].setVisibility(View.VISIBLE);
-        tabs[tab].top().show();
+        NavStack next = tabs[tab];
+        next.animate().cancel();
+        next.setVisibility(View.VISIBLE);
+        next.top().show();
+        next.setAlpha(0.45f);
+        next.setScaleX(0.985f);
+        next.setScaleY(0.985f);
+        next.animate().alpha(1f).scaleX(1f).scaleY(1f).setDuration(220).setInterpolator(Ui.EMPHASIZED).start();
         if (sidebar != null) sidebar.setSelected(tab);
         syncHeader();
     }
@@ -357,9 +368,88 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
 
     @Override public void onBackPressed() {
         if (GlassMenu.dismissAny(root)) return;
+        if (sidebar != null) { closeSidebar(); return; }
         if (searchPage != null && searchPage.getVisibility() == View.VISIBLE) { onExitSearch(); return; }
         if (tabs[tab].canPop()) { tabs[tab].pop(); syncHeader(); return; }
+        if (tab != 0) { dock.select(0, true); onTab(0, false); return; }
         super.onBackPressed();
+    }
+
+    // ---- Real-time SAF Cloud Sync ----
+    void connectSyncNew() {
+        Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("application/json");
+        i.putExtra(Intent.EXTRA_TITLE, "checker-sync.json");
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(i, REQ_SYNC_CREATE);
+    }
+
+    void connectSyncExisting() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("*/*");
+        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(i, REQ_SYNC_OPEN);
+    }
+
+    void disconnectSync() {
+        Store.syncUri = "";
+        Store.lastSyncAt = 0;
+        Store.persist(this);
+        reloadAll();
+        Toast.makeText(this, "클라우드 동기화 연결을 해제했어요", Toast.LENGTH_SHORT).show();
+    }
+
+    void pushSyncAsync() {
+        final String u = Store.syncUri;
+        if (u == null || u.isEmpty()) return;
+        new Thread(() -> {
+            try {
+                String payload = Store.exportJson();
+                try (OutputStream os = getContentResolver().openOutputStream(Uri.parse(u), "wt")) {
+                    if (os != null) os.write(payload.getBytes(StandardCharsets.UTF_8));
+                }
+                Store.lastSyncAt = System.currentTimeMillis();
+                Store.persist(this);
+                runOnUiThread(this::reloadAll);
+            } catch (Exception ignored) {}
+        }, "checker-sync-push").start();
+    }
+
+    void syncNow(boolean showToast) {
+        final String u = Store.syncUri;
+        if (u == null || u.isEmpty()) {
+            if (showToast) Toast.makeText(this, "먼저 동기화 파일을 연결해 주세요", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new Thread(() -> {
+            try {
+                Uri uri = Uri.parse(u);
+                StringBuilder sb = new StringBuilder();
+                try (InputStream is = getContentResolver().openInputStream(uri)) {
+                    if (is != null) {
+                        BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                        String line;
+                        while ((line = br.readLine()) != null) sb.append(line).append('\n');
+                    }
+                }
+                boolean changed = sb.length() > 2 && Store.mergeSyncJson(sb.toString());
+                String out = Store.exportJson();
+                try (OutputStream os = getContentResolver().openOutputStream(uri, "wt")) {
+                    if (os != null) os.write(out.getBytes(StandardCharsets.UTF_8));
+                }
+                Store.lastSyncAt = System.currentTimeMillis();
+                Store.persist(this);
+                if (changed) { Reminder.schedule(this); CheckerWidget.updateAll(this); }
+                runOnUiThread(() -> {
+                    reloadAll();
+                    if (showToast) Toast.makeText(this, changed ? "클라우드에서 최신 변경 사항을 반영했어요" : "최신 상태와 동기화했어요", Toast.LENGTH_SHORT).show();
+                });
+            } catch (Exception e) {
+                if (showToast) runOnUiThread(() -> Toast.makeText(this, "동기화에 실패했어요: " + e.getMessage(), Toast.LENGTH_LONG).show());
+            }
+        }, "checker-sync-now").start();
     }
 
     // ---- Import / export (SAF) ----
@@ -407,6 +497,15 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
                 int n = Store.importJson(sb.toString());
                 dataChanged();
                 Toast.makeText(this, n + "개 항목을 가져왔어요", Toast.LENGTH_SHORT).show();
+            } else if (req == REQ_SYNC_CREATE || req == REQ_SYNC_OPEN) {
+                try {
+                    getContentResolver().takePersistableUriPermission(uri,
+                            Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_WRITE_URI_PERMISSION);
+                } catch (Exception ignored) {}
+                Store.syncUri = uri.toString();
+                Store.autoSync = true;
+                Store.persist(this);
+                syncNow(true);
             }
         } catch (Exception e) {
             Toast.makeText(this, "파일을 처리하지 못했어요: " + e.getMessage(), Toast.LENGTH_LONG).show();
