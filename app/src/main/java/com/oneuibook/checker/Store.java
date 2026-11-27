@@ -51,22 +51,37 @@ final class Store {
 
         static Sub from(JSONObject o) {
             Sub s = new Sub();
-            s.id = o.optString("id", s.id);
-            s.name = o.optString("name", "");
-            s.category = o.optString("category", CATEGORIES[0]);
-            s.currency = o.optString("currency", "KRW");
-            s.memo = o.optString("memo", "");
-            s.payment = o.optString("payment", "");
-            s.amount = o.optDouble("amount", 0);
-            s.cycle = o.optInt("cycle", MONTH);
-            s.every = Math.max(1, o.optInt("every", 1));
+            s.id = clampStr(o.optString("id", s.id), 64);
+            if (s.id.isEmpty()) s.id = UUID.randomUUID().toString();
+            s.name = clampStr(o.optString("name", ""), 120);
+            s.category = clampStr(o.optString("category", CATEGORIES[0]), 40);
+            String cur = o.optString("currency", "KRW");
+            s.currency = isValidCurrency(cur) ? cur : "KRW";
+            s.memo = clampStr(o.optString("memo", ""), 500);
+            s.payment = clampStr(o.optString("payment", ""), 120);
+            double amt = o.optDouble("amount", 0);
+            s.amount = (Double.isNaN(amt) || Double.isInfinite(amt) || amt < 0) ? 0 : Math.min(amt, 1_000_000_000_000.0);
+            int cyc = o.optInt("cycle", MONTH);
+            s.cycle = (cyc >= MONTH && cyc <= DAYS) ? cyc : MONTH;
+            s.every = Math.max(1, Math.min(3650, o.optInt("every", 1)));
             s.anchor = o.optLong("anchor", s.anchor);
             s.endDate = o.optLong("end", -1);
             s.color = o.optInt("color", SWATCHES[0]);
-            s.remind = o.optInt("remind", -1);
+            int rem = o.optInt("remind", -1);
+            s.remind = Math.max(-1, Math.min(365, rem));
             s.paused = o.optBoolean("paused", false);
             s.trial = o.optBoolean("trial", false);
             return s;
+        }
+
+        private static String clampStr(String v, int max) {
+            if (v == null) return "";
+            return v.length() > max ? v.substring(0, max) : v;
+        }
+
+        private static boolean isValidCurrency(String c) {
+            for (String x : CURRENCIES) if (x.equals(c)) return true;
+            return false;
         }
 
         String initial() {
@@ -208,17 +223,22 @@ final class Store {
                 java.net.HttpURLConnection conn = null;
                 try {
                     conn = (java.net.HttpURLConnection) new java.net.URL(u).openConnection();
+                    conn.setInstanceFollowRedirects(false);
                     conn.setConnectTimeout(4500);
                     conn.setReadTimeout(4500);
                     conn.setRequestMethod("GET");
                     if (conn.getResponseCode() == 200) {
-                        java.io.BufferedReader br = new java.io.BufferedReader(
-                                new java.io.InputStreamReader(conn.getInputStream(), java.nio.charset.StandardCharsets.UTF_8));
-                        StringBuilder sb = new StringBuilder();
-                        String line;
-                        while ((line = br.readLine()) != null) sb.append(line);
-                        br.close();
-                        parsed = parseRatesJson(sb.toString());
+                        java.io.InputStream is = conn.getInputStream();
+                        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                        byte[] buf = new byte[4096];
+                        int n, total = 0;
+                        while ((n = is.read(buf)) > 0) {
+                            total += n;
+                            if (total > 256 * 1024) break;
+                            bos.write(buf, 0, n);
+                        }
+                        is.close();
+                        parsed = parseRatesJson(new String(bos.toByteArray(), java.nio.charset.StandardCharsets.UTF_8));
                         if (parsed != null) break;
                     }
                 } catch (Exception ignored) {
@@ -258,27 +278,38 @@ final class Store {
         return o.toString(2);
     }
 
+    static final int MAX_SUBS = 500;
+    private static final int MAX_PAID = 10000;
+
     /** Merges subscriptions & paid marks from an exported/synced file. Returns the number of imported entries. */
     static int importJson(String json) throws Exception {
         JSONObject o = new JSONObject(json);
         JSONArray a = o.getJSONArray("subs");
         int n = 0;
-        for (int i = 0; i < a.length(); i++) {
-            Sub s = Sub.from(a.getJSONObject(i));
+        int limit = Math.min(a.length(), MAX_SUBS);
+        for (int i = 0; i < limit; i++) {
+            JSONObject item = a.optJSONObject(i);
+            if (item == null) continue;
+            Sub s = Sub.from(item);
             Sub old = find(s.id);
-            if (old != null) subs.set(subs.indexOf(old), s); else subs.add(s);
+            if (old != null) subs.set(subs.indexOf(old), s);
+            else if (subs.size() < MAX_SUBS) subs.add(s);
             n++;
         }
         JSONArray pd = o.optJSONArray("paid");
         if (pd != null) {
-            for (int i = 0; i < pd.length(); i++) {
+            int pLim = Math.min(pd.length(), MAX_PAID);
+            for (int i = 0; i < pLim; i++) {
                 String k = pd.optString(i, "");
-                if (!k.isEmpty()) paid.add(k);
+                if (!k.isEmpty() && k.length() <= 100) paid.add(k);
             }
         }
         JSONObject r = o.optJSONObject("rates");
         if (r != null && rateUpdatedAt == 0) {
-            usd = r.optDouble("USD", usd); jpy = r.optDouble("JPY", jpy); eur = r.optDouble("EUR", eur);
+            double u = r.optDouble("USD", usd), j = r.optDouble("JPY", jpy), e = r.optDouble("EUR", eur);
+            if (u >= 500 && u <= 5000) usd = u;
+            if (j >= 2 && j <= 50) jpy = j;
+            if (e >= 500 && e <= 5000) eur = e;
         }
         return n;
     }
@@ -292,7 +323,11 @@ final class Store {
         JSONArray a = o.optJSONArray("subs");
         if (a != null && remoteTs > updatedAt) {
             List<Sub> next = new ArrayList<>();
-            for (int i = 0; i < a.length(); i++) next.add(Sub.from(a.getJSONObject(i)));
+            int limit = Math.min(a.length(), MAX_SUBS);
+            for (int i = 0; i < limit; i++) {
+                JSONObject item = a.optJSONObject(i);
+                if (item != null) next.add(Sub.from(item));
+            }
             subs.clear();
             subs.addAll(next);
             updatedAt = remoteTs;
@@ -300,9 +335,10 @@ final class Store {
         }
         JSONArray pd = o.optJSONArray("paid");
         if (pd != null) {
-            for (int i = 0; i < pd.length(); i++) {
+            int pLim = Math.min(pd.length(), MAX_PAID);
+            for (int i = 0; i < pLim; i++) {
                 String k = pd.optString(i, "");
-                if (!k.isEmpty() && paid.add(k)) changed = true;
+                if (!k.isEmpty() && k.length() <= 100 && paid.add(k)) changed = true;
             }
         }
         return changed;

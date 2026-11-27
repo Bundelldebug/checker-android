@@ -148,7 +148,7 @@ public class CheckerUiTest {
         ActivityController<MainActivity> ctrl = Robolectric.buildActivity(MainActivity.class).setup();
         MainActivity act = ctrl.get();
         assertEquals("체커", act.getString(R.string.app_name));
-        assertEquals("9.5.5", MainActivity.VERSION);
+        assertEquals("9.5.6", MainActivity.VERSION);
         saveShot(act.root, 1236, 2745, "phone-home.png");
 
         act.dock.select(1, false);
@@ -191,5 +191,35 @@ public class CheckerUiTest {
         assertTrue(act.tabletUi());
         act.openSidebar(false);
         saveShot(act.root, 2200, 1440, "tablet-sidebar.png");
+    }
+
+    @Test public void securityHardeningChecks() throws Exception {
+        // 1. Sub.from sanitizes negative/NaN amounts, invalid currency, invalid cycle, and oversized strings
+        org.json.JSONObject bad = new org.json.JSONObject()
+                .put("id", "bad1")
+                .put("name", "x".repeat(300))
+                .put("currency", "EVIL")
+                .put("amount", -9999.0)
+                .put("cycle", 99)
+                .put("every", 999999);
+        Store.Sub s = Store.Sub.from(bad);
+        assertEquals(120, s.name.length());
+        assertEquals("KRW", s.currency);
+        assertEquals(0.0, s.amount, 0.001);
+        assertEquals(Store.MONTH, s.cycle);
+        assertEquals(3650, s.every);
+
+        // 2. importJson ignores out-of-range FX rates
+        double prevUsd = Store.usd;
+        Store.rateUpdatedAt = 0;
+        Store.importJson("{\"subs\":[],\"rates\":{\"USD\":999999,\"JPY\":-5,\"EUR\":1}}");
+        assertEquals(prevUsd, Store.usd, 0.01);
+
+        // 3. readBoundedUtf8 rejects oversized streams
+        byte[] big = new byte[128];
+        try {
+            MainActivity.readBoundedUtf8(new java.io.ByteArrayInputStream(big), 64);
+            fail("Expected size limit rejection");
+        } catch (IllegalStateException expected) {}
     }
 }

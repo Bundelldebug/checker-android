@@ -35,7 +35,8 @@ import java.util.List;
  * phone · unfolded foldable · tablet responsive layouts.
  */
 public final class MainActivity extends Activity implements Dock.Listener, Header.Listener {
-    static final String VERSION = "9.5.5";
+    static final String VERSION = "9.5.6";
+    static final int MAX_IMPORT_BYTES = 4 * 1024 * 1024;
     private static final java.util.concurrent.ExecutorService SYNC_EXEC = java.util.concurrent.Executors.newSingleThreadExecutor();
 
     private static final int REQ_NOTIF = 3001, REQ_EXPORT = 3002, REQ_IMPORT = 3003,
@@ -448,15 +449,11 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
         SYNC_EXEC.execute(() -> {
             try {
                 Uri uri = Uri.parse(u);
-                StringBuilder sb = new StringBuilder();
+                String raw = "";
                 try (InputStream is = getContentResolver().openInputStream(uri)) {
-                    if (is != null) {
-                        BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-                        String line;
-                        while ((line = br.readLine()) != null) sb.append(line).append('\n');
-                    }
+                    if (is != null) raw = readBoundedUtf8(is, MAX_IMPORT_BYTES);
                 }
-                boolean changed = sb.length() > 2 && Store.mergeSyncJson(sb.toString());
+                boolean changed = raw.length() > 2 && Store.mergeSyncJson(raw);
                 String out = Store.exportJson();
                 try (OutputStream os = openWriteStream(uri)) {
                     if (os != null) os.write(out.getBytes(StandardCharsets.UTF_8));
@@ -510,13 +507,11 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
                 }
                 Toast.makeText(this, "백업 파일을 저장했어요", Toast.LENGTH_SHORT).show();
             } else if (req == REQ_IMPORT) {
-                StringBuilder sb = new StringBuilder();
-                try (InputStream is = getContentResolver().openInputStream(uri);
-                     BufferedReader br = new BufferedReader(new InputStreamReader(is, StandardCharsets.UTF_8))) {
-                    String line;
-                    while ((line = br.readLine()) != null) sb.append(line).append('\n');
+                String raw;
+                try (InputStream is = getContentResolver().openInputStream(uri)) {
+                    raw = is != null ? readBoundedUtf8(is, MAX_IMPORT_BYTES) : "";
                 }
-                int n = Store.importJson(sb.toString());
+                int n = Store.importJson(raw);
                 dataChanged();
                 Toast.makeText(this, n + "개 항목을 가져왔어요", Toast.LENGTH_SHORT).show();
             } else if (req == REQ_SYNC_CREATE || req == REQ_SYNC_OPEN) {
@@ -540,6 +535,18 @@ public final class MainActivity extends Activity implements Dock.Listener, Heade
             if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) Reminder.catchUp(this);
             reloadAll();
         }
+    }
+
+    static String readBoundedUtf8(InputStream is, int maxBytes) throws Exception {
+        java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
+        int n, total = 0;
+        while ((n = is.read(buf)) > 0) {
+            total += n;
+            if (total > maxBytes) throw new IllegalStateException("파일 크기가 제한(4MB)을 초과했어요");
+            bos.write(buf, 0, n);
+        }
+        return new String(bos.toByteArray(), StandardCharsets.UTF_8);
     }
 
     @Override protected void onSaveInstanceState(Bundle out) {
